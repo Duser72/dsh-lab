@@ -1,0 +1,149 @@
+# 收录清单
+#
+# 原则：本仓库不放第三方项目代码。
+#   1. 体积——这些项目加起来几十 GB，链路只有约 30KB/s
+#   2. 许可证——AGPL/GPL/MIT 混在一起说不清，也不该由我重新分发
+#   3. 可维护性——别人的代码我改不了，钉住 commit 反而更清楚
+#
+# 代码本体在主机 /root/src/<name>/，浅克隆（--depth 1），按下面的
+# commit 重建。本文件只记录「收了什么、为什么收、现在是什么状态」。
+
+meta:
+  updated: 2026-10-30
+  host: agent-dev (PVE LXC, Debian 12)
+  src_root: /root/src
+
+# ---------------------------------------------------------------
+# 核心：方案直接依赖
+# ---------------------------------------------------------------
+core:
+  - repo: CursorTouch/Windows-MCP
+    license: MIT
+    stars: 10766
+    commit: null            # 拉下来后回填
+    use: Windows 侧的手——点击、输入、截图、UI 树、剪贴板、启动程序
+    why: >
+      唯一同时满足三条的：原生 streamable-http（DSH 的 mcp-client 直接能连）、
+      自带 --auth-key 与 --ip-allowlist、有 relaxed/balanced/strict 三级
+      control policy 能把 PowerShell、剪贴板写入、启动程序单独圈出来。
+    config:
+      transport: streamable-http
+      bind: 127.0.0.1:18080
+      auth: bearer token
+      policy: balanced
+      exclude_processes: explorer.exe  # 断掉 GUI 删除这条路
+
+# ---------------------------------------------------------------
+# 自研：本方案的独有部分
+# ---------------------------------------------------------------
+own:
+  - name: confirm-proxy
+    status: planned
+    use: 唯一收口。过滤工具、冻结输入、原生弹窗确认、回收站、审计
+    why: 现成的 gateways 都不做「确认期间冻结 agent 键鼠」这一步
+  - name: scripts/win-audit.ps1
+    status: done
+    use: Windows 只读体检
+  - name: scripts/dsh-hardening.sh
+    status: done
+    use: Linux 侧 8080/22 收到内网
+
+# ---------------------------------------------------------------
+# 可选：按需启用
+# ---------------------------------------------------------------
+optional:
+  - repo: bluenviron/mediamtx
+    license: MIT
+    stars: 20560
+    use: 摄像头/采集卡 → RTSP，给 agent 取帧
+    note: 不做 USB 直通，因为带宽和延迟都不可接受
+  - repo: Genymobile/scrcpy
+    license: Apache-2.0
+    stars: 153572
+    use: 手机投屏与操作，走 adb over TCP
+    note: 手机已在 Windows 上跑着 adb server（127.0.0.1:5037）
+  - repo: localsend/localsend
+    license: Apache-2.0
+    stars: 96639
+    use: 人工点对点传文件
+    note: 已装在 Windows；只适合人工，不适合 agent 持续读写
+  - repo: wonderwhy-er/DesktopCommanderMCP
+    license: MIT
+    stars: 10170
+    use: 若需要 agent 直接编辑 Windows 文件时的备选
+    note: 与 Windows-MCP 功能重叠，暂不启用（会扩大攻击面）
+  - repo: dorssel/usbipd-win
+    license: GPL-3.0
+    stars: 6269
+    use: 仅串口设备直通的兜底
+    note: usbip 协议本身无认证，只能走隧道 + 防火墙；能不用就不用
+
+# ---------------------------------------------------------------
+# 参考：只读设计，不作为依赖
+# ---------------------------------------------------------------
+reference:
+  - repo: arjeetanand/mcp-security-gateway
+    license: none
+    stars: 0
+    use: 借鉴其「工具白名单 + 风险分级 + 人工审批 + 审计」的四层结构
+    why_not: 无许可证、零 star、四个月前停更，不适合作为基础
+
+# ---------------------------------------------------------------
+# 不采用
+# ---------------------------------------------------------------
+rejected:
+  - repo: openclaw/openclaw
+    stars: 393442
+    reason: 本身就是全权 agent。叠在 DSH 旁边等于两个大脑抢一台机器
+  - repo: NousResearch/hermes-agent
+    stars: 258745
+    reason: 同上，替代性运行时，不并行
+  - repo: YuJunZhiXue/dsh-purge
+    stars: 13687
+    reason: 提示词越狱插件。目标是「让模型更少拒绝」，与安全目标相反
+  - repo: itsfatduck/optimizerDuck
+    stars: 10723
+    reason: 改系统设置/服务。与「可回滚、可审计」冲突，不在这台机器上跑
+  - repo: OpenListTeam/OpenList
+    license: AGPL-3.0
+    stars: 25375
+    reason: 文件层选了 SMB3 加密直连，少一个 Go 服务 + 反代 + 默认密码
+  - repo: rustdesk/rustdesk
+    license: AGPL-3.0
+    stars: 127582
+    reason: Windows 上已在跑（:21118 对 tailnet 开放）。属现有工具，不在本方案内
+  - repo: microsoft/PowerToys
+    license: MIT
+    stars: 140274
+    reason: >
+      已装。Mouse Without Borders 只支持 Windows↔Windows，连不到 Linux，
+      对跨系统无缝没有帮助。其余模块（Advanced Paste / Text Extractor）
+      属个人效率，与本方案无关
+  - repo: hmjz100/LinkSwift
+    license: AGPL-3.0
+    stars: 36553
+    reason: 网盘直链下载油猴脚本，与远程操作无关
+  - repo: HKUDS/DeepTutor
+    stars: 51421
+    reason: 教学助手，无关
+  - repo: shihabal3amri/DiPlay
+    license: GPL-3.0
+    stars: 12863
+    reason: Android 车机 CarPlay 接收器，无关
+  - repo: yt-dlp/yt-dlp
+    reason: 视频下载工具，需要时再装
+
+# ---------------------------------------------------------------
+# 决策记录
+# ---------------------------------------------------------------
+decisions:
+  - what: 为什么不直接在 Windows 上跑 DSH
+    because: >
+      agent 会与浏览器 cookie、密码管理器、SSH key、公司 VPN 同权；
+      提示注入一次就等于整机沦陷；改坏了难回滚。
+      现在 Windows 上确实跑着 DSH 桌面版，本方案是并列的第二条通道，不动它。
+  - what: 文件层用 SMB3 + EncryptData，不选 OpenList
+    because: 千兆内网约 110MB/s，两端内置无需新服务；OpenList 多一个 Web 服务 + 反代 + 默认密码
+  - what: 删除只做"一道锁"（程序里没有删除能力）
+    because: 双账户 + NTFS 拒绝删除是内核级保证，但要多花半天；
+      当前靠「无 Shell + 唯一 fs_trash + 冻结键鼠 + 回收站」已足够
