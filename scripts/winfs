@@ -1,0 +1,69 @@
+#!/bin/bash
+# winfs - read/write files on the Windows box over SMB (userspace, no mount)
+#   winfs ls    <read|work> [path]
+#   winfs cat   <read|work> <remote>
+#   winfs get   <read|work> <remote> <local>
+#   winfs put   work <local> <remote>
+#   winfs mkdir work <path>
+#   winfs del   work <path>
+#
+# The "read" share (D:\) is exported by Windows with READ-ONLY permission.
+# Writes/deletes there are refused by Windows itself; this script also refuses
+# them locally so the intent is obvious.
+set -uo pipefail
+
+CRED=/root/.smbcred-win
+HOST=100.71.46.90
+SHARE_READ=win-read
+SHARE_WORK=win-work
+
+die() { echo "winfs: $*" >&2; exit 1; }
+[ -f "$CRED" ] || die "credentials missing: $CRED"
+
+share_of() {
+    case "$1" in
+        read) echo "$SHARE_READ" ;;
+        work) echo "$SHARE_WORK" ;;
+        *)    die "share must be 'read' or 'work'" ;;
+    esac
+}
+
+smbc() { smbclient "//$HOST/$1" -A "$CRED" -m SMB3 -c "$2"; }
+
+need_write() {
+    [ "$1" = "read" ] && die "share 'read' is read-only (D:\\ is exported READ-ONLY by Windows)"
+    return 0
+}
+
+cmd=${1:-}
+[ -n "$cmd" ] || die "usage: winfs {ls|cat|get|put|mkdir|del} <read|work> ..."
+shift
+
+case "$cmd" in
+    ls)
+        s=$(share_of "${1:?share}") || exit 1
+        smbc "$s" "ls ${2:-}" ;;
+    cat)
+        s=$(share_of "${1:?share}") || exit 1
+        r=${2:?remote path}
+        t=$(mktemp)
+        smbc "$s" "get ${r} ${t}" >/dev/null 2>&1 || { rm -f "$t"; die "get failed: $r"; }
+        cat "$t"; rm -f "$t" ;;
+    get)
+        s=$(share_of "${1:?share}") || exit 1
+        smbc "$s" "get ${2:?remote} ${3:?local}" ;;
+    put)
+        need_write "${1:?share}"
+        s=$(share_of "$1") || exit 1
+        smbc "$s" "put ${2:?local} ${3:?remote}" ;;
+    mkdir)
+        need_write "${1:?share}"
+        s=$(share_of "$1") || exit 1
+        smbc "$s" "mkdir ${2:?path}" ;;
+    del)
+        need_write "${1:?share}"
+        s=$(share_of "$1") || exit 1
+        smbc "$s" "del ${2:?path}" ;;
+    *)
+        die "unknown command: $cmd" ;;
+esac
