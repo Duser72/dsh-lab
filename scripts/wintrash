@@ -1,0 +1,22 @@
+#!/bin/bash
+# wintrash - 申请删除 Windows 文件。必须在电脑前点"是"，进回收站。
+#   wintrash "理由（至少10字）" "D:\路径" ["D:\另一个路径"...]
+set -uo pipefail
+if [ $# -lt 2 ]; then echo "用法: wintrash <理由> <路径> [路径...]" >&2; exit 2; fi
+reason=$1; shift
+id="$(date +%s)-$RANDOM"
+tmp=$(mktemp /tmp/trash-XXXXXX.json)
+python3 - "$id" "$reason" "$@" > "$tmp" <<'PY'
+import json,sys
+print(json.dumps({"id":sys.argv[1],"reason":sys.argv[2],"paths":sys.argv[3:]},ensure_ascii=False))
+PY
+winfs put work "$tmp" "trash-requests/$id.json" >/dev/null 2>&1 || { echo "提交失败：Windows 侧目录不存在或未连接"; rm -f "$tmp"; exit 1; }
+rm -f "$tmp"
+echo "已提交申请（id=$id）。请看你的屏幕，弹窗里点「是」或「否」。"
+for _ in $(seq 1 90); do
+    sleep 2
+    r=$(winfs cat work "trash-requests/$id.result.json" 2>/dev/null)
+    if [ -n "$r" ]; then echo "$r"; exit 0; fi
+done
+echo "等了 3 分钟没结果（你可能不在电脑前），申请已取消。"
+exit 3
