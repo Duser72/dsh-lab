@@ -9,7 +9,7 @@
 # commit 重建。本文件只记录「收了什么、为什么收、现在是什么状态」。
 
 meta:
-  updated: 2026-10-30
+  updated: 2026-10-31
   host: agent-dev (PVE LXC, Debian 12)
   src_root: /root/src
 
@@ -147,3 +147,26 @@ decisions:
   - what: 删除只做"一道锁"（程序里没有删除能力）
     because: 双账户 + NTFS 拒绝删除是内核级保证，但要多花半天；
       当前靠「无 Shell + 唯一 fs_trash + 冻结键鼠 + 回收站」已足够
+
+# ---------------------------------------------------------------
+# 本地副本
+# 2026-10-31 从 Windows D:\Mgithub 同步到 /root/src（跳过 node_modules/.venv）
+# 体积合计 3.7 GB。要重建：git clone 后在 manifest 里对回下面的 commit。
+# ---------------------------------------------------------------
+local_copies:
+  - { dir: Windows-MCP,    repo: CursorTouch/Windows-MCP,      size: 190M, commit: a3d8e01 }
+  - { dir: PowerToys,      repo: microsoft/PowerToys,          size: 431M, commit: 8056ba0 }
+  - { dir: OpenList,       repo: OpenListTeam/OpenList,        size: 10M,  commit: fb692b5 }
+  - { dir: LocalSend,      repo: localsend/localsend,          size: 39M,  commit: cfd69912 }
+  - { dir: DiPlay,         repo: shihabal3amri/DiPlay,         size: 50M,  commit: 49bf3bc2 }
+  - { dir: LinkSwift,      repo: hmjz100/LinkSwift,            size: 1.6M, commit: c62d10a }
+  - { dir: dsh-purge,      repo: YuJunZhiXue/dsh-purge,        size: 6.7M, commit: 160b911 }
+  - { dir: hermes-agent,   repo: NousResearch/hermes-agent,    size: 869M, commit: 3705625b74 }
+  - { dir: openclaw,       repo: openclaw/openclaw,            size: 282M, commit: e282cb2a }
+  - { dir: DeepTutor,      repo: HKUDS/DeepTutor,              size: 1.4G, commit: bd9f6a7 }
+  - { dir: optimizerduck,  repo: itsfatduck/optimizerDuck,     size: 97M,  commit: f68192e }
+  - { dir: yt-dlp,         repo: yt-dlp/yt-dlp,                size: 41M,  commit: f264a6c }
+  - { dir: rea,            repo: unknown,                      size: 186M, commit: 3784a8e54 }
+  - { dir: aerial-tv,      repo: unknown,                      size: 95M,  commit: bd30a9f }
+  - { dir: cleanyourtv,    repo: unknown,                      size: 109M, commit: 5e9e4f1 }
+  - { dir: pve-upload-tool,repo: local,                        size: 24K,  commit: null }
