@@ -1,15 +1,16 @@
-"""dsh-gateway - lazy front door for Windows-MCP + human-confirmed deletion.
+"""dsh-gateway - lazy Windows-MCP front door with human-confirmed dangerous actions.
 
-Listens on 127.0.0.1:18080 (what the SSH tunnel forwards).
-Starts Windows-MCP on 127.0.0.1:18083 the first time a client connects and
-stops it again after IDLE_SECONDS of nobody using it.
+127.0.0.1:18080  (what the SSH tunnel forwards)
+  -> starts Windows-MCP on 127.0.0.1:18083 on first use, stops it after idle.
 
-Deletion: the agent cannot delete anything. It can only drop a request file into
-  D:\\dsh\\work\\trash-requests\\<id>.json
-containing {"id", "reason", "paths"}. This process shows a native dialog with the
-reason and the file list, and only after the human clicks Yes moves those paths
-to the Recycle Bin. While the dialog is up, every MCP connection is refused so
-the agent cannot click the dialog itself.
+Guards:
+  * App tool  - launch_executable/launch are checked against a hard block list,
+                a small allow list, and otherwise need a human "yes" dialog.
+  * Shortcut  - dangerous key combos (win+r, win+x, ctrl+shift+esc, shift+delete...)
+                are refused outright.
+  * Deletion  - no delete tool exists. The agent may only drop a request file in
+                D:\\dsh\\work\\trash-requests\\<id>.json; a human confirms and the
+                files go to the Recycle Bin.
 """
 
 import ctypes
@@ -41,6 +42,27 @@ EXCLUDE = (
     "regedit.exe"
 )
 
+# never launchable, even with a human "yes"
+BLOCK_EXES = {
+    "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe",
+    "mshta.exe", "regedit.exe", "reg.exe", "taskmgr.exe", "mmc.exe",
+    "rundll32.exe", "regsvr32.exe", "wmic.exe", "netsh.exe", "sc.exe",
+    "schtasks.exe", "bitsadmin.exe", "certutil.exe", "psexec.exe",
+    "explorer.exe", "curl.exe", "wget.exe", "msiexec.exe", "installutil.exe",
+    "wechat.exe", "weixin.exe",
+}
+# launchable without asking
+ALLOW_EXES = {
+    "notepad.exe", "calc.exe", "mspaint.exe", "wordpad.exe", "charmap.exe",
+    "msedge.exe", "chrome.exe", "firefox.exe", "code.exe", "devenv.exe",
+    "excel.exe", "winword.exe", "powerpnt.exe", "wps.exe", "et.exe", "wpp.exe",
+    "qq.exe", "tim.exe",
+}
+BLOCK_SHORTCUTS = {
+    "win+r", "win+x", "ctrl+shift+esc", "shift+delete", "ctrl+alt+del",
+    "ctrl+shift+enter", "win+s", "win+q", "alt+ctrl+del", "win+e+shift",
+}
+
 _lock = threading.Lock()
 _proc = None
 _active = 0
@@ -71,17 +93,14 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
 
 def ask_yes_no(title, text):
     MB_YESNO, MB_ICONWARNING, MB_TOPMOST, MB_SETFOREGROUND = 0x04, 0x30, 0x10000, 0x1000
-    r = ctypes.windll.user32.MessageBoxW(
+    return ctypes.windll.user32.MessageBoxW(
         None, text, title, MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND
-    )
-    return r == 6
+    ) == 6
 
 
 def drive_is_fixed(path):
     root = os.path.splitdrive(os.path.abspath(path))[0]
-    if not root:
-        return False
-    return ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 3
+    return bool(root) and ctypes.windll.kernel32.GetDriveTypeW(root + "\\") == 3
 
 
 def human(n):
@@ -120,9 +139,6 @@ def recycle(paths):
     op.pFrom = "\0".join(paths) + "\0\0"
     op.pTo = None
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
-    op.fAnyOperationsAborted = 0
-    op.hNameMappings = None
-    op.lpszProgressTitle = None
     rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     return rc, bool(op.fAnyOperationsAborted)
 
@@ -211,11 +227,6 @@ def _pump(src, dst):
             dst.sendall(data)
     except Exception:
         pass
-    finally:
-        try:
-            dst.shutdown(socket.SHUT_WR)
-        except Exception:
-            pass
 
 
 def freeze():
@@ -238,6 +249,128 @@ def unfreeze():
     _frozen = False
 
 
+# ------------------------------------------------------------ request reading
+
+def read_request(sock):
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        try:
+            chunk = sock.recv(65536)
+        except OSError:
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+        if len(buf) > 8 * 1024 * 1024:
+            return None
+    head, rest = buf.split(b"\r\n\r\n", 1)
+    clen = 0
+    for line in head.split(b"\r\n")[1:]:
+        k, _, v = line.decode("latin1").partition(":")
+        if k.strip().lower() == "content-length":
+            try:
+                clen = int(v.strip())
+            except ValueError:
+                clen = 0
+    while len(rest) < clen:
+        try:
+            chunk = sock.recv(65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        rest += chunk
+    body = rest[:clen]
+    leftover = rest[clen:]
+    return head, body, leftover
+
+
+def send_deny(sock, body_bytes, message):
+    rid = None
+    try:
+        req = json.loads(body_bytes.decode("utf-8"))
+        rid = req.get("id")
+    except Exception:
+        pass
+    payload = json.dumps({
+        "jsonrpc": "2.0", "id": rid,
+        "error": {"code": -32000, "message": message},
+    }, ensure_ascii=False).encode("utf-8")
+    head = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n\r\n" % len(payload)
+    ).encode("latin1")
+    try:
+        sock.sendall(head + payload)
+    except OSError:
+        pass
+
+
+def confirm(title, text):
+    global _frozen
+    _frozen = True
+    try:
+        return ask_yes_no(title, text)
+    finally:
+        _frozen = False
+
+
+def check_tool_call(body):
+    """Return None if allowed, or a deny/confirm decision."""
+    try:
+        req = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+    if req.get("method") != "tools/call":
+        return None
+    params = req.get("params") or {}
+    name = params.get("name")
+    args = params.get("arguments") or {}
+
+    if name == "Shortcut":
+        combo = str(args.get("shortcut", "")).lower().replace(" ", "")
+        parts = "+".join(sorted(combo.split("+")))
+        if combo in BLOCK_SHORTCUTS or parts in BLOCK_SHORTCUTS:
+            log("blocked shortcut %r" % combo)
+            return ("deny", "快捷键 %s 已被禁用（不允许打开运行框/任务管理器这一类）" % combo)
+        if "win+r" in combo or "shift+delete" in combo:
+            log("blocked shortcut %r" % combo)
+            return ("deny", "快捷键 %s 已被禁用" % combo)
+        return None
+
+    if name == "App":
+        mode = str(args.get("mode") or "launch")
+        if mode in ("switch", "resize"):
+            return None
+        exe = args.get("executable")
+        start_name = args.get("name")
+        if exe:
+            base = os.path.basename(str(exe)).lower()
+            if base in BLOCK_EXES:
+                log("blocked launch of %s" % base)
+                return ("deny", "%s 被禁止启动（命令行类程序一律不许）" % base)
+            if base in ALLOW_EXES:
+                return None
+            if confirm("DSH 请求启动程序",
+                       "我（DSH）想启动这个程序：\n\n%s\n\n参数：%s\n\n允许吗？"
+                       % (exe, args.get("args"))):
+                log("human approved launch of %s" % exe)
+                return None
+            log("human denied launch of %s" % exe)
+            return ("deny", "你拒绝了启动 %s" % exe)
+        if start_name:
+            if confirm("DSH 请求启动程序",
+                       "我（DSH）想从开始菜单启动：\n\n%s\n\n允许吗？" % start_name):
+                log("human approved launch of %r" % start_name)
+                return None
+            log("human denied launch of %r" % start_name)
+            return ("deny", "你拒绝了启动 %s" % start_name)
+        return None
+    return None
+
+
 def handle(client):
     global _active, _last_activity
     if _frozen:
@@ -251,15 +384,23 @@ def handle(client):
     _conns.add(client)
     up = None
     try:
+        req = read_request(client)
+        if req is None:
+            return
+        head, body, leftover = req
+        decision = check_tool_call(body)
+        if decision is not None:
+            action, message = decision
+            send_deny(client, body, message)
+            return
         if not ensure_mcp():
+            send_deny(client, body, "Windows 上的 MCP 没能启动")
             return
         up = socket.create_connection(UPSTREAM, timeout=10)
-        t1 = threading.Thread(target=_pump, args=(client, up), daemon=True)
-        t2 = threading.Thread(target=_pump, args=(up, client), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        up.sendall(head + b"\r\n\r\n" + body + leftover)
+        t = threading.Thread(target=_pump, args=(client, up), daemon=True)
+        t.start()
+        _pump(up, client)
     except Exception as e:
         log("proxy error: %r" % (e,))
     finally:
@@ -303,7 +444,7 @@ def build_dialog_text(reason, paths):
     lines.append("共 %d 项。" % len(paths))
     lines.append("")
     lines.append("这些会【移入回收站】，可以还原。")
-    lines.append("清空回收站需要你本人操作，我永远没有这个能力。")
+    lines.append("清空回收站需要你本人操作。")
     return "\n".join(lines)
 
 
@@ -326,7 +467,6 @@ def process_request(path):
 
     paths = req.get("paths") or []
     reason = (req.get("reason") or "").strip()
-
     err = validate(req)
     if err:
         log("trash %s rejected: %s" % (rid, err))
@@ -382,11 +522,12 @@ def trash_watch():
 def quit_stack(reason):
     log("shutting down whole stack (%s)" % reason)
     stop_mcp("stack idle")
-    try:
-        subprocess.run(["taskkill", "/IM", "ssh.exe", "/F"],
-                       capture_output=True, creationflags=0x08000000)
-    except Exception:
-        pass
+    for exe in ("ssh.exe", "adb.exe"):
+        try:
+            subprocess.run(["taskkill", "/IM", exe, "/F"],
+                           capture_output=True, creationflags=0x08000000)
+        except Exception:
+            pass
     os._exit(0)
 
 
@@ -404,6 +545,22 @@ def idle_watch():
                 quit_stack("idle %ds" % STACK_IDLE_SECONDS)
 
 
+def free_port(port):
+    """Kill whatever still listens on `port` (a previous gateway instance)."""
+    try:
+        out = subprocess.run(["netstat", "-ano"], capture_output=True,
+                             text=True, creationflags=0x08000000).stdout
+        for line in out.splitlines():
+            if (":%d " % port) in line and "LISTENING" in line.upper():
+                pid = line.split()[-1]
+                if pid.isdigit() and int(pid) != os.getpid():
+                    subprocess.run(["taskkill", "/F", "/PID", pid],
+                                   capture_output=True, creationflags=0x08000000)
+                    log("killed stale listener on port %d (pid %s)" % (port, pid))
+    except Exception as e:
+        log("free_port error: %r" % (e,))
+
+
 def main():
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
     log("gateway listening on 127.0.0.1:18080 -> 18083 (idle=%ds, stack=%ds)"
@@ -412,7 +569,13 @@ def main():
     threading.Thread(target=trash_watch, daemon=True).start()
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(LISTEN)
+    try:
+        srv.bind(LISTEN)
+    except OSError:
+        log("port %d busy, clearing it" % LISTEN[1])
+        free_port(LISTEN[1])
+        time.sleep(1.5)
+        srv.bind(LISTEN)
     srv.listen(50)
     try:
         while True:
