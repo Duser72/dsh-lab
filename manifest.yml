@@ -152,6 +152,7 @@ decisions:
 # 本地副本
 # 2026-10-31 从 Windows D:\Mgithub 同步到 /root/src（跳过 node_modules/.venv）
 # 体积合计 3.7 GB。要重建：git clone 后在 manifest 里对回下面的 commit。
+# 2026-10-31：Windows 上 D:\Mgithub 的副本已全部移入回收站，只保留这里这一份。
 # ---------------------------------------------------------------
 local_copies:
   - { dir: Windows-MCP,    repo: CursorTouch/Windows-MCP,      size: 190M, commit: a3d8e01 }
